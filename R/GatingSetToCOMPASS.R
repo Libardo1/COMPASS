@@ -35,8 +35,8 @@ GatingSetToCOMPASS <- function(gs, parent_path, markers, meta, individual_id, sa
     stop("This function depends on the suggested package \"flowWorkspace\".")
   }
   
-  if (!inherits(gs, "GatingSet")) {
-    stop("'gs' must be an object of class 'GatingSet'")
+  if (!(inherits(gs, "GatingSet") || inherits(gs, "GatingSetList"))) {
+    stop("'gs' must be an object inheritting from 'GatingSet' or 'GatingSetList'")
   }
   
   ## Initialize memory to store the intensities and counts
@@ -49,6 +49,8 @@ GatingSetToCOMPASS <- function(gs, parent_path, markers, meta, individual_id, sa
   
   message("Retrieving counts for parent at path '", parent_path, "'.")
   for (i in seq_along(gs)) {
+    
+    message("Extracting data for sample ", i, " of ", n, " (", sn[[i]], ")...")
     
     ## Get the cell counts for the parent
     ind <- flowWorkspace:::.getNodeInd(gs[[i]], parent_path)
