@@ -1,7 +1,7 @@
 ## debugging
 if (FALSE) {
   library(flowWorkspace)
-  gs <- load_gs("../shinyGate/gs/LoveLab-Gated")
+  gs <- load_gs("../shinyGate/gs/LoveLab")
 }
 
 ##'  Extract A GatingSet Node to a COMPASSContainer
@@ -13,7 +13,8 @@ if (FALSE) {
 ##'  @param gs A \code{GatingSet} object.
 ##'  @param node The name of the node. We extract all children of that node,
 ##'    under the assumption that the markers of interest have been gated at
-##'    the chosen node.
+##'    the chosen node. We partially match the node name to the paths to
+##'    each node.
 ##'  @param children A character vector, or list, giving the names of the children of
 ##'    \code{node} that we wish to extract. If unspecified, we take all
 ##'    children of that node. If the character vector passed is named, we map
@@ -28,69 +29,77 @@ if (FALSE) {
 ##'    This vector should contain all of the names in the \code{data} input.
 ##'  @export
 ##'  @seealso \code{\link{COMPASSContainer}}
-GatingSetToCOMPASS <- function(gs, node, children, 
-                               meta, individual_id, sample_id) {
+GatingSetToCOMPASS <- function(gs, parent_path, markers, meta, individual_id, sample_id, fixed=TRUE) {
   
-  if (require(flowWorkspace)) {
+  if (!require(flowWorkspace)) {
+    stop("This function depends on the suggested package \"flowWorkspace\".")
+  }
+  
+  if (!inherits(gs, "GatingSet")) {
+    stop("'gs' must be an object of class 'GatingSet'")
+  }
+  
+  ## Initialize memory to store the intensities and counts
+  n <- length(gs)
+  counts <- numeric(n)
+  sn <- sampleNames(gs)
+  intensities <- vector("list", n)
+  names(counts) <- sn
+  names(intensities) <- sn
+  
+  message("Retrieving counts for parent at path '", parent_path, "'.")
+  for (i in seq_along(gs)) {
     
-    if (!inherits(gs, "GatingSet")) {
-      stop("'gs' must be an object of class 'GatingSet'")
-    }
+    ## Get the cell counts for the parent
+    ind <- flowWorkspace:::.getNodeInd(gs[[i]], parent_path)
+    stats <- flowWorkspace:::.getPopStat(gs[[i]], ind)
+    counts[[i]] <- stats$flowCore["count"]
     
-    if (missing(children)) {
-      children <- getChildren(gs[[1]])
-    }
+    ## the parent-level data
+    res <- exprs(getData( gs[[i]], parent_path ))
+    res <- res[, markers, drop=FALSE]
     
-    doWarn <- FALSE
-    .children <- getChildren(gs[[1]], node, isPath=TRUE)
-    for (i in 1:length(gs)) {
-      if (!identical(.children, getChildren(gs[[i]], node, isPath=TRUE))) {
-        doWarn <- TRUE
+    ## the child-level data
+    children <- getChildren( gs[[i]], parent_path, isPath=TRUE )
+    res_child <- lapply(children, function(child) {
+      exprs(getData( gs[[i]], child ))[, markers, drop=FALSE]
+    })
+    names(res_child) <- children
+    
+    ## the idea: we have the cell intensities for the parent population,
+    ## and we have the number of cells that made it through a particular
+    ## 'marker' gate. all the cells in the parent population that
+    ## did not make it through the 'marker' gate should get 0 for that marker
+    
+    for (child in children) {
+      for (marker in markers) {
+        res[, marker][ !(rownames(res) %in% rownames(res_child[[child]])) ] <- 0
       }
     }
     
-    if (doWarn) {
-      warning("The children of node '", node, "' are not identical across ",
-              "each of the samples encapsulated by your GatingSet; be sure that ",
-              "your samples have been gated uniformly at each node.")
-    }
+    ## keep only the elements where at least one is positive
+    res <- res[ apply(res, 1, sum) != 0, , drop=FALSE]
+    intensities[[i]] <- res
     
-    ## get the data at each node
-    data <- vector("list", length(children))
-    for (i in 1:length(gs)) {
-      data[[i]] <- getData(gs, children[i])
-    }
-    data <- getData(gs, node)
-    intensities <- Map(exprs, data)
-    names(intensities) <- sampleNames(gs)
-    counts <- integer( length(gs) )
-    for (i in seq_along(counts)) {
-      counts[[i]] <- getTotal( gs[[i]], node, flowJo=FALSE )
-    }
-    names(counts) <- sampleNames(gs)
-    
-    ## try to get the metadata, if available
-    if (missing(meta)) {
-      tryCatch(meta <- pData(gs),
-               error=function(e) {
-                 stop("No metadata available!")
-               })
-    }
-    
-    CC <- COMPASSContainer(
-      data=intensities,
-      counts=counts,
-      meta=meta,
-      individual_id=individual_id,
-      sample_id=sample_id
-    )
-    
-    return(CC)
-    
-  } else {
-    stop("This function requires 'flowWorkspace' to be installed; ",
-         "try running 'biocLite(\"flowWorkspace\")' to install.")
   }
+  
+  ## try to get the metadata, if available
+  if (missing(meta)) {
+    tryCatch(meta <- pData(gs),
+             error=function(e) {
+               stop("No metadata available!")
+             })
+  }
+  
+  CC <- COMPASSContainer(
+    data=intensities,
+    counts=counts,
+    meta=meta,
+    individual_id=individual_id,
+    sample_id=sample_id
+  )
+  
+  return(CC)
   
 }
 
@@ -132,108 +141,114 @@ GatingSetToCOMPASS <- function(gs, node, children,
 ##' @export
 COMPASSContainerFromGatingSet <- function(gs=NULL,node=NULL,filter.fun=NULL,individual_id="PTID",sample_id="name",stimulation_id="Stim",mp=NULL,countFilterThreshold=5000){
   if(require(flowWorkspace)){
-  if(is.null(gs)|is.null(node)){
-    stop("Must specify a gating set and parent node.")
-  }
-  #extract all the counts
-  message("Extracting cell counts")
-  stats<-getPopStats(gs,statistic="count")
-  
-  pd<-pData(gs)
-  #Do the expected columns exist?
-  if(!all(c(sample_id,individual_id,stimulation_id)%in%colnames(pd))){
-    message("Some columns not found in metadata")
-    message(sprintf("Expected: %s %s %s",sample_id,individual_id,stimulation_id))
-    message(sprintf("Missing: %s\n",c(sample_id,individual_id,stimulation_id)[which(!c(sample_id,individual_id,stimulation_id)%in%colnames(pd))]))
-    stop("Quitting")
-  }
-  #Can we identify a unique parent node?
-  parent.pop<-rownames(stats)[grepl(node,rownames(stats),fixed=FALSE)]
-  if(length(parent.pop)>1){
-    stop(sprintf("The node expression %s is not unique.",node))
-  }
-  if(length(parent.pop)==0){
-    stop(sprintf("The node expression %s doesn't identify any nodes.",node))
-  }
-  
-  # Grab the counts for the parent
-  counts<-stats[which(rownames(stats)%in%parent.pop),]
-  
-  # Extract the parent node name from the full population name
-  parent.node <- laply(strsplit(parent.pop,"/"),function(x)x[length(x)])
-  message(sprintf("Fetching %s",parent.node))
-  # Get the children of that parent and filter out boolean gates
-  # Test if children exist, and test if non-empty set returned.
-  message("Fetching child nodes")
-  child.nodes <- getChildren(gs[[1]],parent.node)
-  if(length(child.nodes)==0){
-    stop(sprintf("Population %s has no children! Choose a different parent population.",parent.node))
-  }
-  
-  child.nodes <- child.nodes[!sapply(child.nodes,function(x)flowWorkspace:::.isBoolGate(gs[[1]],x))]
-  if(length(child.nodes)==0){
-    stop(sprintf("All the children of %s are boolean gates. Choose a population with non-boolean child gates.",parent.node))
-  }
-  
-  # Make sure the child node names are mapped to channel names correctly.
-  # This is awful.. we don't have a way to track which dimension of a 2D gate is of importance.. so this code tries to take a guess by matching node names to marker names and doing some deduplication if there's ambiguity.
-  # I cannot even begin to count the number of ways this could fail.
-  # I'll check that the number of mapped nodes at the end matches the expected number of child nodes, and error out if it doesn't. We may also want to let the user pass a map.
-  if(is.null(mp)){
-    params<-parameters(getData(gs[[1]]))@data
-    params <- data.table(params[,c("name","desc")])
-    setkeyv(params, "desc")
-    if(class(filter.fun)!="function"){
-      filter.fun<-function(x){
-        gsub("-","",gsub("\\d+\\.","",gsub("\\\\","",gsub("/","",gsub("\\+","",x)))))
-      }
+    if(is.null(gs)|is.null(node)){
+      stop("Must specify a gating set and parent node.")
     }
-    map <- na.omit(unique(ldply(child.nodes,function(x)params[desc%like%filter.fun(x),node:=x])))
-    tbl <- table(map$node)
-    if(any(tbl>1)){
-      row.remove<-sapply(which(tbl>1),function(x){
-        row.keep<-which(map$desc%in%filter.fun(names(tbl)[x]))
-        all.row<-which(map$node%in%names(tbl)[x])
-        row.remove<-setdiff(all.row,row.keep)
-      })
-      map<-map[-c(row.remove),]
-    }
+    #extract all the counts
+    message("Extracting cell counts")
+    stats<-getPopStats(gs,statistic="count")
     
-    #Some error checking
-    if(nrow(map)!=length(child.nodes)){
-      message(sprintf("We failed to guess the mapping between the node %s and the markers in the flowFrame\n",child.nodes))
-      message("Our best guess was:")
-      kable(map)
+    pd<-pData(gs)
+    #Do the expected columns exist?
+    if(!all(c(sample_id,individual_id,stimulation_id)%in%colnames(pd))){
+      message("Some columns not found in metadata")
+      message(sprintf("Expected: %s %s %s",sample_id,individual_id,stimulation_id))
+      message(sprintf("Missing: %s\n",c(sample_id,individual_id,stimulation_id)[which(!c(sample_id,individual_id,stimulation_id)%in%colnames(pd))]))
       stop("Quitting")
     }
-    message("We will map the following nodes to markers:")
-    kable(map)
+    #Can we identify a unique parent node?
+    parent.pop<-rownames(stats)[grepl(node,rownames(stats),fixed=FALSE)]
+    if(length(parent.pop)>1){
+      stop(sprintf("The node expression %s is not unique.",node))
+    }
+    if(length(parent.pop)==0){
+      stop(sprintf("The node expression %s doesn't identify any nodes.",node))
+    }
     
+    # Grab the counts for the parent
+    counts<-stats[which(rownames(stats)%in%parent.pop),]
     
-    #construct the map
-    mp<-map[,"desc"]
-    names(mp)<-map[,"node"]
-    mp<-as.list(mp)
-  }
-  #Construct the expression
-  expr<-as.name(paste(child.nodes,collapse="|"))
-  message(sprintf("Extracting single cell data for %s",as.character(expr)))
-  
-  #extract the single cell values
-  sc_data<-getData(obj=gs,y=expr,pop_marker_list=mp)
-  
-  message("Filtering low counts")
-  filter <- counts > countFilterThreshold
-  keep.names <- names(counts)[filter]
-  sc_data <- sc_data[keep.names]
-  counts <- counts[keep.names]
-  pd <- subset(pd,eval(as.name(sample_id))%in%keep.names)
-  message(sprintf("Filtering %s samples due to low counts",length(filter)-length(keep.names)))
-  
-  message("Creating COMPASS Container")
-  cc<-COMPASSContainer(data=sc_data,counts=counts,meta=pd,individual_id=individual_id,sample_id=sample_id,stimulation_id=stimulation_id)
-  return(cc)
+    # Extract the parent node name from the full population name
+    parent.node <- laply(strsplit(parent.pop,"/"),function(x)x[length(x)])
+    message(sprintf("Fetching %s",parent.node))
+    # Get the children of that parent and filter out boolean gates
+    # Test if children exist, and test if non-empty set returned.
+    message("Fetching child nodes")
+    child.nodes <- getChildren(gs[[1]],parent.node)
+    if(length(child.nodes)==0){
+      stop(sprintf("Population %s has no children! Choose a different parent population.",parent.node))
+    }
+    
+    child.nodes <- child.nodes[!sapply(child.nodes,function(x)flowWorkspace:::.isBoolGate(gs[[1]],x))]
+    if(length(child.nodes)==0){
+      stop(sprintf("All the children of %s are boolean gates. Choose a population with non-boolean child gates.",parent.node))
+    }
+    
+    # Make sure the child node names are mapped to channel names correctly.
+    # This is awful.. we don't have a way to track which dimension of a 2D gate is of importance.. so this code tries to take a guess by matching node names to marker names and doing some deduplication if there's ambiguity.
+    # I cannot even begin to count the number of ways this could fail.
+    # I'll check that the number of mapped nodes at the end matches the expected number of child nodes, and error out if it doesn't. We may also want to let the user pass a map.
+    if(is.null(mp)){
+      params<-parameters(getData(gs[[1]]))@data
+      params <- data.table(params[,c("name","desc")])
+      #make case consistent
+      params[,desc.upper:=toupper(desc)]
+      child.nodes.upper<-toupper(child.nodes)
+      child.nodes<-data.table(data.frame(child.nodes,child.nodes.upper))
+      setkeyv(params, "desc")
+      if(class(filter.fun)!="function"){
+        filter.fun<-function(x){
+          gsub("-","",gsub("\\d+\\.","",gsub("\\\\","",gsub("/","",gsub("\\+","",x)))))
+        }
+      }
+      child.nodes[,child.nodes.upper:=filter.fun(child.nodes.upper)]
+      map <- na.omit(unique(ldply(child.nodes[,child.nodes.upper],function(x){params[desc.upper%like%x,child.nodes.upper:=x]})))
+      map<-data.table(merge(map,child.nodes,by="child.nodes.upper",all.x=TRUE))
+      map[,node:=child.nodes]
+      tbl <- table(map$node)
+      if(any(tbl>1)){
+        row.remove<-sapply(which(tbl>1),function(x){
+          row.keep<-which(map$desc%in%filter.fun(names(tbl)[x]))
+          all.row<-which(map$node%in%names(tbl)[x])
+          row.remove<-setdiff(all.row,row.keep)
+        })
+        map<-map[-c(row.remove),]
+      }
+      
+      #Some error checking
+      if(nrow(map)!=length(child.nodes[,child.nodes])){
+        message(sprintf("We failed to guess the mapping between the node %s and the markers in the flowFrame\n",child.nodes))
+        message("Our best guess was:")
+        kable(map)
+        stop("Quitting")
+      }
+      message("We will map the following nodes to markers:")
+      kable(map[,c(2,3,6),with=FALSE])
+      
+      
+      #construct the map
+      mp<-map[,desc]
+      names(mp)<-map[,node]
+      mp<-as.list(mp)
+    }
+    #Construct the expression
+    expr<-as.name(paste(map[,node],collapse="|"))
+    message(sprintf("Extracting single cell data for %s",as.character(expr)))
+    
+    #extract the single cell values
+    sc_data<-getData(obj=gs,y=expr,pop_marker_list=mp)
+    
+    message("Filtering low counts")
+    filter <- counts > countFilterThreshold
+    keep.names <- names(counts)[filter]
+    sc_data <- sc_data[keep.names]
+    counts <- counts[keep.names]
+    pd <- subset(pd,eval(as.name(sample_id))%in%keep.names)
+    message(sprintf("Filtering %s samples due to low counts",length(filter)-length(keep.names)))
+    
+    message("Creating COMPASS Container")
+    cc<-COMPASSContainer(data=sc_data,counts=counts,meta=pd,individual_id=individual_id,sample_id=sample_id,stimulation_id=stimulation_id)
+    return(cc)
   }
   stop("This function requires flowWorkspace to be installed")
 }
-

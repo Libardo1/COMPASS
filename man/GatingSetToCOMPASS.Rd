@@ -2,14 +2,16 @@
 \alias{GatingSetToCOMPASS}
 \title{Extract A GatingSet Node to a COMPASSContainer}
 \usage{
-GatingSetToCOMPASS(gs, node, children, meta, individual_id, sample_id)
+GatingSetToCOMPASS(gs, parent_path, markers, meta, individual_id, sample_id,
+  fixed = TRUE)
 }
 \arguments{
   \item{gs}{A \code{GatingSet} object.}
 
   \item{node}{The name of the node. We extract all children
   of that node, under the assumption that the markers of
-  interest have been gated at the chosen node.}
+  interest have been gated at the chosen node. We partially
+  match the node name to the paths to each node.}
 
   \item{children}{A character vector, or list, giving the
   names of the children of \code{node} that we wish to
