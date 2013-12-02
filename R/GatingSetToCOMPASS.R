@@ -47,35 +47,58 @@ GatingSetToCOMPASS <- function(gs, parent_path, markers, meta, individual_id, sa
   names(counts) <- sn
   names(intensities) <- sn
   
+  fs <- getData(gs, parent_path)
+  
   message("Retrieving counts for parent at path '", parent_path, "'.")
   for (i in seq_along(gs)) {
-    
-    message("Extracting data for sample ", i, " of ", n, " (", sn[[i]], ")...")
     
     ## Get the cell counts for the parent
     ind <- flowWorkspace:::.getNodeInd(gs[[i]], parent_path)
     stats <- flowWorkspace:::.getPopStat(gs[[i]], ind)
     counts[[i]] <- stats$flowCore["count"]
     
+    children <- getChildren( gs[[i]], parent_path, isPath=TRUE )
+    if (missing(markers)) {
+      markers <- gsub(".*/|\\+|-", "", children)
+    }
+    
+    ## guess the index based on the markers supplied
+    pm <- parameters( fs[[i]] )@data
+    bgi <- sapply(markers, function(marker) {
+      
+      m <- matrix( nrow=2, byrow=TRUE, c(
+        adist(marker, pm$name),
+        adist(marker, pm$desc)
+      ))
+      rownames(m) <- c("name", "desc")
+      
+      return (which.min(apply(m, 2, min)))
+    })
+    names(bgi) <- markers
+    
     ## the parent-level data
     res <- exprs(getData( gs[[i]], parent_path ))
-    res <- res[, markers, drop=FALSE]
+    res <- res[, bgi, drop=FALSE]
     
-    ## the child-level data
-    children <- getChildren( gs[[i]], parent_path, isPath=TRUE )
     res_child <- lapply(children, function(child) {
-      exprs(getData( gs[[i]], child ))[, markers, drop=FALSE]
+      exprs(getData( gs[[i]], child ))[, bgi, drop=FALSE]
     })
     names(res_child) <- children
     
+    ## we need to map the node path, whose name represents some marker,
+    ## to the actual column in our flowSet
+    map <- data.frame(
+      path=children
+    )
+    
     ## the idea: we have the cell intensities for the parent population,
-    ## and we have the number of cells that made it through a particular
+    ## and we have the cell intensities for cells that made it through a particular
     ## 'marker' gate. all the cells in the parent population that
     ## did not make it through the 'marker' gate should get 0 for that marker
     
     for (child in children) {
-      for (marker in markers) {
-        res[, marker][ !(rownames(res) %in% rownames(res_child[[child]])) ] <- 0
+      for (ind in bgi) {
+        res[, ind][ !(rownames(res) %in% rownames(res_child[[child]])) ] <- 0
       }
     }
     
